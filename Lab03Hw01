@@ -1,0 +1,94 @@
+#Lab03_Hw1
+
+#Install necessary pacakges
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(ggplot,rnoaa,EcoHydRology,lattice)
+
+#Bring in station data, Station Id: 13339500 LOLO CREEK NR GREER ID
+myflowgage_id="13339500"
+myflowgage=get_usgs_gage(myflowgage_id,
+                         begin_date="2016-01-01",end_date = "2022-02-09")
+
+# Identify weather stations nearby
+stns=meteo_distance(
+  station_data=ghcnd_stations(),
+  lat=myflowgage$declat,
+  long=myflowgage$declon,
+  units = "deg",
+  radius = 30,
+  limit = NULL
+)
+# We are looking for stations with elements that have PRCP, TMAX and TMIN 
+# and current data 
+WXStn=stns[stns$element=="TMAX"&stns$last_year>=2021,]$id[2]
+WXData=meteo_pull_monitors(
+  monitors=WXStn,
+  keep_flags = FALSE,
+  date_min = "2016atan-01-01",
+  date_max = NULL,
+  var = c("TMAX","TMIN","PRCP")
+)
+
+# Creat an aligned modeldata data frame to build our model in
+modeldata=merge(WXData,myflowgage$flowdata,by.x="date",by.y="mdate")
+
+#Convert paramters to usable units
+modeldata$Qmm = modeldata$flow/myflowgage$area/10^3
+modeldata$MaxTemp=modeldata$tmax/10 # Converting to C
+modeldata$MinTemp=modeldata$tmin/10 # Converting to C
+modeldata$P=modeldata$prcp/10 # Converting to mm
+
+#remove NA values
+modeldata$P[is.na(modeldata$P)]=0
+modeldata$MinTemp[is.na(modeldata$MinTemp)]=0
+modeldata$MaxTemp[is.na(modeldata$MaxTemp)]=modeldata$MinTemp[is.na(modeldata$MaxTemp)] +1
+
+
+
+#Attach data frame
+attach(modeldata)
+SNO_Energy_a =SnowMelt(date, P, MaxTemp-3, MinTemp-3, myflowgage$declat, 
+                    slope = atan(0/100),
+                    aspect =0*(pi/180), tempHt = 1, windHt = 2, groundAlbedo = 0.25,
+                    SurfEmissiv = 0.95, windSp = 2, forest = 0, startingSnowDepth_m = 0,
+                    startingSnowDensity_kg_m3=450)
+
+SNO_Energy_b =SnowMelt(date, P, MaxTemp-3, MinTemp-3, myflowgage$declat, 
+                      slope = atan(10/100),
+                      aspect =0*(pi/180), tempHt = 1, windHt = 2, groundAlbedo = 0.25,
+                      SurfEmissiv = 0.95, windSp = 2, forest = 0, startingSnowDepth_m = 0,
+                      startingSnowDensity_kg_m3=450)
+SNO_Energy_c =SnowMelt(date, P, MaxTemp-3, MinTemp-3, myflowgage$declat, 
+                      slope = atan(10/100),
+                      aspect =180*(pi/180), tempHt = 1, windHt = 2, groundAlbedo = 0.25,
+                      SurfEmissiv = 0.95, windSp = 2, forest = 0, startingSnowDepth_m = 0,
+                      startingSnowDensity_kg_m3=450)
+SNO_Energy_d =SnowMelt(date, P, MaxTemp-3, MinTemp-3, myflowgage$declat, 
+                      slope = atan(45/100),
+                      aspect =45*(pi/180), tempHt = 1, windHt = 2, groundAlbedo = 0.25,
+                      SurfEmissiv = 0.95, windSp = 2, forest = 0, startingSnowDepth_m = 0,
+                      startingSnowDensity_kg_m3=450)
+SNO_Energy_e =SnowMelt(date, P, MaxTemp-3, MinTemp-3, myflowgage$declat, 
+                      slope = atan(45/100),
+                      aspect =135*(pi/180), tempHt = 1, windHt = 2, groundAlbedo = 0.25,
+                      SurfEmissiv = 0.95, windSp = 2, forest = 0, startingSnowDepth_m = 0,
+                      startingSnowDensity_kg_m3=450)
+detach(modeldata)
+
+#Create graph framework
+
+p1<- ggplot() + 
+  ylim(c(0,20))+
+  geom_line(data=SNO_Energy_a,aes(x=date, y = SnowfallWatEq_mm, colour ="red"), size=1)+
+  geom_line(data=SNO_Energy_b,aes(x=date, y = SnowfallWatEq_mm, colour ="pink"), size=1)+
+  geom_line(data=SNO_Energy_c,aes(x=date, y = SnowfallWatEq_mm, colour ="orange"), size=1)+
+  geom_line(data=SNO_Energy_d,aes(x=date, y = SnowfallWatEq_mm, colour ="green"), size=1)+
+  geom_line(data=SNO_Energy_e,aes(x=date, y = SnowfallWatEq_mm, colour ="blue"), size=1)+
+  scale_colour_manual(labels = c("flat slope", "10% slope, N facing", "10% slope, S facing", "45% slope, NW facing", "45% slope, SW facing"),
+                      values = c("red", "pink","orange","green", "blue"))+
+                 ylab("SWE (mm)")+
+                 ggtitle("SWE for the Energy-Based Snowmelt and Accumulation Model in the Greer, ID Region")+
+  xlim(as.Date(c("2021-01-01", "2021-04-01")))
+
+p1
+
