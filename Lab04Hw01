@@ -1,0 +1,189 @@
+##Browse Github and download file
+browseURL("https://github.com/vtdrfuka/BSE5304_2022")
+url="https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/Lab04.R"
+download.file(url,"Lab04.R")
+
+##Results of Lab04.R File
+options(repos ="http://cran.us.r-project.org")  # required to get latest libs
+# Installing the packages we will play with today
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(elevatr,soilDB,rgdal,raster)
+# From previous weeks
+pacman::p_load(EcoHydRology,rnoaa,curl,httr)
+rm(list=objects())
+setwd("~")
+dir.create("~/Lab04")
+setwd("~/Lab04/")
+
+# 3 Functions to calculate SWE and excess when soil is drying, 
+#   wetting, and wetting above capacity
+source("https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/functions/TMWBmodel.R")
+
+# Download a soils dataset for your basin based on the WebSoilSurvey method 
+# and replace this url with your own
+url="https://websoilsurvey.sc.egov.usda.gov/DSD/Download/AOI/io2cmx2xrhy1acxblo3pgaif/wss_aoi_2022-02-15_19-46-52.zip"
+download.file(url,"mysoil.zip")
+unzip("mysoil.zip")
+
+
+#USGS 04121494 CHIPPEWA CREEK AT 90TH AVENUE NEAR EVART, MI
+myflowgage_id="04121494"
+myflowgage=get_usgs_gage(myflowgage_id,begin_date = "2015-01-01",end_date = "2022-03-01")
+
+# Note that flow returned is in m3/day, but we want mm/day for the basin
+myflowgage$flowdata$Qmm = myflowgage$flowdata$flow/myflowgage$area/10^3
+
+# the soil data using the soilDB package
+mysoil=readOGR("wss_aoi_2022-02-15_19-46-52/spatial/soilmu_a_aoi.shp") 
+
+# Explore the mysoil dataset which is returned
+mybbox=c(mysoil@bbox)
+
+# First associate mukey with cokey from component
+mysoil$mukey=mysoil$MUKEY  # or rename the column
+mukey_statement = format_SQL_in_statement(unique(mysoil$mukey))
+q_mu2co = paste("SELECT mukey,cokey FROM component WHERE mukey IN ", mukey_statement, sep="")
+mu2co = SDA_query(q_mu2co)
+
+# Second associate cokey with ksat_r,awc_r,hzdepb_r from chorizon
+cokey_statement = format_SQL_in_statement(unique(mu2co$cokey))
+q_co2ch = paste("SELECT cokey,ksat_r,awc_r,hzdepb_r  FROM chorizon WHERE cokey IN ", cokey_statement, sep="")
+co2ch = SDA_query(q_co2ch)
+
+# Last, bring them back together, and aggregate based on max values
+# of ksat_r,awc_r, and hzdepb_r
+mu2ch=merge(mu2co,co2ch)
+summary(mu2ch)
+mu2chmax=aggregate(mu2ch,list(mu2ch$mukey),max)
+
+proj4_ll = "+proj=longlat"
+proj4string(mysoil) = proj4_ll
+mydem=get_elev_raster(locations=mysoil, 
+                      z = 11, prj =proj4string(mysoil) ,
+                      src ="aws",clip="bbox",expand = 0.001)
+View(mydem)
+summary(terrain(mydem, opt='slope',unit = "degrees"))
+View(terrain(mydem, opt='slope',unit = "degrees"))
+plot(terrain(mydem, opt='slope',unit = "degrees"))
+
+
+# What is this 'slope'? Use the man page for the terrain() function to answer
+plot(terrain(mydem, opt='TPI',unit = "degrees"))
+summary(terrain(mydem, opt='TPI',unit = "degrees"))
+
+# What is this 'TPI'? Topographic Position index, difference between the value of a cell and the mean value of its 8 surronding cells
+summary(terrain(mydem, opt='TRI',unit = "degrees"))
+View(terrain(mydem, opt='TRI',unit = "degrees"))
+plot(terrain(mydem, opt='TRI',unit = "degrees"))
+
+# What is this 'TRI'? Terrain ruggedness index, mean of the absolute differences between the value of a cell and the value of its 8 surronding cells
+stns=meteo_distance(
+  station_data=ghcnd_stations(),
+  lat=myflowgage$declat,
+  long=myflowgage$declon,
+  units = "deg",
+  radius = 30,
+  limit = NULL
+)
+
+# We are looking for stations with elements that have PRCP, TMAX and TMIN 
+# and current data (i.e. Year 2021). 
+WXStn=stns[stns$element=="TMAX"&stns$last_year>=2021,]$id[1]
+WXData=meteo_pull_monitors(
+  monitors=WXStn,
+  keep_flags = FALSE,
+  date_min = "2016-01-01",
+  date_max = NULL,
+  var = c("TMAX","TMIN","PRCP") 
+)
+summary(WXData)  #
+
+# Create an aligned modeldata data frame to build our model in
+modeldata=merge(WXData,myflowgage$flowdata,by.x="date",by.y="mdate")
+summary(modeldata)  #
+modeldata$MaxTemp=modeldata$tmax/10 # Converting to C
+modeldata$MinTemp=modeldata$tmin/10 # Converting to C
+modeldata$P=modeldata$prcp/10 # Converting to mm
+ 
+# Compare your precipitation to the flow out of your basin
+modeldata$P[is.na(modeldata$P)]=0
+modeldata$MinTemp[is.na(modeldata$MinTemp)]=0
+modeldata$MaxTemp[is.na(modeldata$MaxTemp)]=
+  modeldata$MinTemp[is.na(modeldata$MaxTemp)] +1
+modeldata$MaxTemp[modeldata$MaxTemp<=modeldata$MinTemp]=
+  modeldata$MinTemp[modeldata$MaxTemp<=modeldata$MinTemp]+1
+modeldata$AvgTemp=(modeldata$MaxTemp+modeldata$MaxTemp)/2.0
+
+summary(modeldata)
+modeldata[is.na(modeldata)]=0 # A Quick BUT sloppy removal of NAs
+TMWB=modeldata
+
+
+#see frequencies of raster data, 3201
+hist(mydem)
+freq(mydem)
+
+
+# Last weeks homework example
+source("https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/functions/TMWBmodel.R")
+
+
+# Calibrating the parameters one at a time
+for (fcres in seq(.1,.5,.1)){
+  TMWBnew=TMWBmodel(TMWB=TMWB,fcres=fcres)
+  print(paste(fcres,NSE(TMWBnew$Qmm,TMWBnew$Qpred)))
+}
+
+for (SFTmp in seq(-5,20)){
+  TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.1,SFTmp = SFTmp)
+  print(paste(SFTmp,NSE(TMWBnew$Qmm,TMWBnew$Qpred)))
+}
+
+for(AWCval in seq(50,350,50)){
+  TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.1,SFTmp = 20,Tlag = .5,AWCval = AWCval)
+  print(paste(AWCval,NSE(TMWBnew$Qmm,TMWBnew$Qpred)))
+}
+
+# Best result for "USGS 04121494 CHIPPEWA CREEK AT 90TH AVENUE NEAR EVART, MI". 
+TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 50)
+print(paste(AWCval,NSE(TMWBnew$Qmm,TMWBnew$Qpred)))
+
+
+# For a simple spatial model, use TMWB, to initialize 3 
+# slope components for Top, Mid, and Bottom of the hillside. 
+TopSlope=TMWB
+TopSlope$P=TMWB$P/3
+
+TMWBmodelTop=TMWBmodel(TMWB=TopSlope,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 50)
+View(TMWBmodelTop)
+
+MidSlope=TMWB
+MidSlope$P=TopSlope$P+TMWBmodelTop$Excess
+View(MidSlope)
+
+TMWBmodelMid=TMWBmodel(TMWB=MidSlope,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 50)
+View(TMWBmodelMid)
+
+BotSlope=TMWB
+BotSlope$P=TopSlope$P+TMWBmodelMid$Excess
+View(BotSlope)
+
+TMWBmodelBot=TMWBmodel(TMWB=BotSlope,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 50)
+View(TMWBmodelBot)
+
+#Plot AW and Excess
+p1<- ggplot()+
+  # Plot AW data for all three slopes
+  geom_line(data=TMWBmodelTop, aes(x=date, y = AW,colour = "blue"), size=1) +
+  geom_line(data=TMWBmodelMid, aes(x=date,y=AW,colour="green"), size=1)+
+  geom_line(data=TMWBmodelBot, aes(x=date, y=AW,colour="red"), size=1)+
+  geom_line(data=TMWBmodelTop,aes(x=date, y = Excess, colour = "light blue")) +
+  geom_line(data=TMWBmodelMid, aes(x=date,y=Excess, colour="light green"))+
+  geom_line(data=TMWBmodelBot, aes(x=date, y=Excess, colour="pink"))+
+  # Create a second axis with sec_axis() and format the labels
+  scale_colour_manual(labels = c("Top Slope, AW", "Mid Slope, AW", "Bottom Slope, AW", "Top Slope, Excess", "Mid Slope, Excess", "Bottom Slope, Excess"),
+                      values = c("blue", "green","red", "light blue", "light green","pink"))+
+  ylab("AW or Excess (mm)")+
+  ggtitle("AW and Excess for top, mid, and bottom slopes near Evart, Michigan")
+  
+p1
