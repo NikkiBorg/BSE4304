@@ -1,0 +1,157 @@
+##### Lab06 Hw2 
+
+##### Build the distributed VSA-CN based watershed model, with 5 TI Classes,
+##### and plot the time series of Q contributions for each TI class. Remember
+##### that for the upslope TI Class, Q laterally flows/contributes to the TI Class below it.
+##### Please plot and describe what you see, what is the average annual runoff from each TI class?
+
+rm(list=objects())
+setwd("~")
+laburl="https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/Lab05/lab05sol"
+download.file(laburl,"Lab05Sol.R")
+file.edit("Lab05Sol.R")
+# Run this script to get all the base data
+
+
+# We know that our systems behave differently during snowy winter
+# months, so we will isolate our June ( month>5) - October ( < 11 ) data (_JO)
+
+TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 100)
+
+pacman::p_load(lubridate, data.table)
+BasinTMWB_JO=TMWBnew[(month(TMWBnew$date) >= 5 
+                      & month(TMWBnew$date) < 11),]
+
+attach(BasinTMWB_JO)
+f <- function (x) {
+  Sest=x
+  NSE(Qmm,dP^2/(dP+Sest))
+}
+
+Sest=optimize(f, c(50,500), tol = 0.0001,maximum = TRUE)$maximum
+detach(BasinTMWB_JO)
+
+# Here we take advantage of a library, data.table, which allows us 
+# to access values from lead/lag vectors through a shift() function 
+# We will split into 5 VSA areas represented by 5 TI Classes
+nTIclass=5
+VSAsol=data.table(WetClass=seq(from=nTIclass,to=1),
+                  As=seq(1:nTIclass)*(1/nTIclass),Wetfrac=(1/nTIclass))
+VSAsol[,sSratio:=2*(sqrt(1-shift(As))-sqrt(1-As))/Wetfrac-1]
+
+# Inspect what the previous command gives us, note it is just a fancy way of 
+# shifting the index of a vector in the VSAsol data frame 
+# using the data.table::shift() function.Fill in the missing value
+
+VSAsol$sSratio[1]=2*(sqrt(1-0)-sqrt(1-VSAsol$As[1]))/VSAsol$Wetfrac[1]-1
+
+# Calculate TI Class localized sigma and Curve Number
+
+VSAsol[,sigma:=Sest*sSratio]
+VSAsol[,CN:=25400/(sigma+254)]
+VSAsol
+
+# Use the CNmodel Function from last week, but set up 5 TI Classes instead
+# of 3 hillslope locations
+ 
+# Initialize the TI Class objects from top to bottom of slope
+  TIC05=modeldata
+# For TIC05 CNavg=VSAsol$CN[1]
+  TIC05 = CNmodel(CNmodeldf = TIC05, CNavg=VSAsol$CN[1],
+                  func_DAWC=.3,IaFrac=0.05,
+                  func_z=1000,fnc_fcres=.3)
+  
+# Scale reservoir coefficient between the .2-.5 given in class 
+# Same as lab 5, just call the CNmodel function with each of the 
+# TIClass objects and route Qpred to ExcessIn below
+  
+# Repeat for TI Classes 1-4, start by initializing and complete the previous
+# initializations, and don't forget to route TI Class 1 to 2, 2 to 3, etc.
+  TIC04=modeldata
+  TIC04$P=TIC05$Excess+TIC04$P
+# Repeat aboves initialization for TIC04 here, and follow through to TIC01
+# Run CNmodel to get a solution for the watershed outlet.
+
+#TIC04
+TIC04 = CNmodel(CNmodeldf = TIC04, CNavg=VSAsol$CN[2],
+                  func_DAWC=.3,IaFrac=0.05,
+                  func_z=1000,fnc_fcres=.3)
+TIC03=modeldata
+TIC03$P=TIC04$Excess+TIC03$P
+
+#TIC03
+TIC03 = CNmodel(CNmodeldf = TIC03, CNavg=VSAsol$CN[3],
+                func_DAWC=.3,IaFrac=0.05,
+                func_z=1000,fnc_fcres=.3)
+TIC02=modeldata
+TIC02$P=TIC03$Excess+TIC02$P
+
+#TIC02
+TIC02 = CNmodel(CNmodeldf = TIC02, CNavg=VSAsol$CN[4],
+                func_DAWC=.3,IaFrac=0.05,
+                func_z=1000,fnc_fcres=.3)
+TIC01=modeldata
+TIC01$P=TIC02$Excess+TIC01$P
+
+#TIC01
+TIC01 = CNmodel(CNmodeldf = TIC01, CNavg=VSAsol$CN[5],
+                func_DAWC=.3,IaFrac=0.05,
+                func_z=1000,fnc_fcres=.3)
+
+install.packages("ggplot2")
+p_load(ggplot2)
+
+p1<-ggplot()+
+  geom_line(data=TIC01, aes(x=date, y=Qpred, color="pink"))+
+  geom_line(data=TIC02, aes(x=date, y=Qpred, color="orange"))+
+  geom_line(data=TIC03, aes(x=date, y=Qpred, color="light yellow"))+
+  geom_line(data=TIC04, aes(x=date, y=Qpred, color="light green"))+
+  geom_line(data=TIC05, aes(x=date, y=Qpred, color="light blue"))+
+  labs(x = 'Date', y = 'Qpred (mm)')+
+  scale_colour_manual(labels = c("37.33", "70.82", "83.08","91.25","97.28"), name= "CN",
+                      values = c("pink", "orange","light yellow", "light green","light blue"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("Discharge from Different TIs in the Lick Run Watershed")
+p1
+
+attach(TIC01)
+mean(Qpred)
+detach(TIC01)
+
+attach(TIC02)
+mean(Qpred)
+detach(TIC02)
+
+attach(TIC03)
+mean(Qpred)
+detach(TIC03)
+
+attach(TIC04)
+mean(Qpred)
+detach(TIC04)
+
+attach(TIC05)
+mean(Qpred)
+detach(TIC05)
+
+
+## Does AW vary with time?
+
+p3<-ggplot()+
+  geom_line(data=TIC01, aes(x=date, y=AW, color="pink"))+
+  geom_line(data=TIC02, aes(x=date, y=AW, color="orange"))+
+  geom_line(data=TIC03, aes(x=date, y=AW, color="light yellow"))+
+  geom_line(data=TIC04, aes(x=date, y=AW, color="light green"))+
+  geom_line(data=TIC05, aes(x=date, y=AW, color="light blue"))+
+  labs(x = 'Date', y = 'AW')+
+  scale_colour_manual(labels = c("TIC01", "TIC02", "TIC03", "TIC04", "TIC05"), name= "CN",
+                      values = c("pink", "orange","light yellow", "light green","light blue"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("AW Variability for Different TI")
+p3
+
+summary(TIC01$AW)
+summary(TIC02$AW)
+summary(TIC03$AW)
+summary(TIC04$AW)
+summary(TIC05$AW)
