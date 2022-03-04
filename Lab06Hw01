@@ -1,0 +1,76 @@
+##### Lab06 Hw1 
+
+#####:Using the DEoptim function, calibrate the Lick Run TMWB model parameters 
+##### (fcres, SFTmp , Tlag, AWCval) and  CN model parameters (CNavg, IaFrac, func_DAWC, func_z, fnc_fcres) 
+##### to maximize NSE (or minimize 1-NSE since DEoptim is a minimization optimization)
+##### between predicted streamflow and observed streamflow. Report back the optimal parameter values 
+##### as well as a graph of the two models' flow with Qmm. 
+
+rm(list=objects())
+setwd("~")
+laburl="https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/Lab05/lab05sol"
+download.file(laburl,"Lab05Sol.R")
+file.edit("Lab05Sol.R")
+# Run this script to get all the base data
+
+#Calibrate TMWB model
+TMWB=modeldata
+
+f <- function (x) {
+  fcresOpt=x[1]
+  SFTmpOpt=x[2]
+  TlagOpt=x[3]
+  AWCvalOpt=x[4]
+  TMWBmodelnew=TMWBmodel(TMWB=TMWB,fcres=fcresOpt,SFTmp = SFTmpOpt,Tlag = TlagOpt,AWCval = AWCvalOpt)
+  1-NSE(TMWBmodelnew$Qmm,TMWBmodelnew$Qpred)  
+}
+
+lower <- c(0.1,-5,0,150)
+upper <- c(0.5,5,1,350)
+
+
+## run DEoptim and set a seed first for replicability
+set.seed(1234)
+DEoptim(f, lower, upper,control = DEoptim.control(itermax=40))
+
+## NSE = 0.70
+TMWBmodelnew=TMWBmodel(TMWB=TMWB,fcres=0.3164885,SFTmp = 4.4901414,Tlag = 0.2271333,AWCval = 150.0306312)
+
+#Calibrate the CN model
+CNmodeldf=modeldata
+View(CNmodel)
+
+#Optimize CNavg, IaFrac, func_DAWC, func_z, fnc_fcre
+
+f <- function (x) {
+  CNopt=x[1]
+  IaOpt=x[2]
+  DAWCopt=x[3]
+  zopt=x[4]
+  fcreopt=x[5]
+  CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg = CNopt,IaFrac = IaOpt,func_DAWC = DAWCopt, func_z=zopt, fnc_fcre = fcreopt )
+  1-NSE(CNmodelnew$Qmm,CNmodelnew$Qpred)  
+}
+
+lower <- c(35,.01,0.1,500, 0.1)
+upper <- c(99,.25,0.3,1500,0.5)
+
+## run DEoptim and set a seed first for replicability
+set.seed(1234)
+DEoptim(f, lower, upper,control = DEoptim.control(itermax=40))
+
+## NSE = 0.424
+CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg =95.61,IaFrac=0.0192,fnc_slope=0, 
+                   fnc_aspect=0,func_DAWC= 0.296,func_z=1474.7,fnc_fcres=0.388)
+
+
+#Flows using the optimized models
+p2<- ggplot()+
+    geom_line(data=TMWBmodelnew, aes(x=date, y=Qpred, colour="pink"))+
+    geom_line(data=CNmodelnew, aes(x=date, y=Qpred, colour= "light blue"))+
+    geom_line(data=modeldata, aes(x=date, y=Qmm, colour="black"))+
+    scale_colour_manual(labels = c("TMWB","CN", "Qmm"), name= "Model \nType",
+                      values = c("pink","light blue","black"))+
+  ggtitle("Optimized CN and TMWB Models compared to Qmm")
+
+p2
